@@ -42,25 +42,54 @@ def split(
     chunks = chunker.split_blocks(blocks)
     typer.echo(f"   Згенеровано {len(chunks)} частин")
 
-    # write chunks
+    # ---- Зберігаємо частини та зображення ----
+    try:
+        from pdf2image import convert_from_path  # type: ignore
+    except ImportError:
+        convert_from_path = None  # type: ignore
+
     for idx, chunk in enumerate(chunks, 1):
-        part_id = f"part-{idx:04d}_{book_slug}"
-        part_dir = out_dir / part_id
+        part_suffix = f"part-{idx:04d}"
+        part_dir = out_dir / f"{part_suffix}_{book_slug}"
         part_dir.mkdir(parents=True, exist_ok=True)
-        md_path = part_dir / f"{book_slug}_{part_id}_text.md"
+
+        # 1. Markdown текст
+        md_path = part_dir / f"{book_slug}_{part_suffix}_text.md"
         md_path.write_text(chunk.text, encoding="utf-8")
 
+        # 2. Зображення (за наявності pdf2image)
+        images: list[str] = []
+        if convert_from_path is not None:
+            try:
+                pages_imgs = convert_from_path(
+                    str(pdf_path),
+                    fmt="png",
+                    first_page=chunk.page_start,
+                    last_page=chunk.page_end,
+                    thread_count=2,
+                    output_folder=str(part_dir),
+                    paths_only=True,
+                    output_file=f"{book_slug}_{part_suffix}_img",
+                )
+                # convert_from_path returns list of file paths
+                images = [Path(p).name for p in pages_imgs if isinstance(p, str)]
+            except Exception as e:
+                typer.echo(f"⚠️  Помилка конвертації зображень: {e}")
+
+        # 3. meta.json
         meta = {
-            "part_id": f"{book_slug}_{part_id}",
+            "part_id": f"{book_slug}_{part_suffix}",
             "page_start": chunk.page_start,
             "page_end": chunk.page_end,
             "tokens": chunk.tokens,
-            "images": [],  # TODO: image support
+            "images": images,
             "source_pdf": pdf_path.name,
             "checksum": f"sha256:{sha256sum(md_path)}",
             "created": datetime.now(timezone.utc).isoformat(),
         }
-        (part_dir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2))
+        (part_dir / "meta.json").write_text(
+            json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
 
     # manifest
     manifest = {
@@ -77,14 +106,70 @@ def split(
         json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
+    # README
+    readme_path = out_dir / "README.md"
+    if not readme_path.exists():
+        readme_content = f"""# {manifest['title']}
+
+Цей набір файлів згенеровано утилітою **pdf-md-chunker** та придатний для імпорту у *NotebookLM*.
+
+Запустіть команду імпорту, обравши каталог `{out_dir.name}`. Кожний підкаталог *part-XXXX* містить Markdown текст та пов'язані зображення.
+"""
+        readme_path.write_text(readme_content, encoding="utf-8")
+
     typer.echo("✅ Готово!")
 
 
 @app.command()
 def validate(book_dir: Path = typer.Argument(..., exists=True, dir_okay=True)):
     """Validate the exported book directory structure and metadata."""
-    typer.echo(f"[stub] Validating export at '{book_dir}'…")
-    # TODO: Implement validation logic
+    import json
+    from .utils import token_count
+
+    manifest_path = book_dir / "book_manifest.json"
+    if not manifest_path.exists():
+        typer.secho("❌ Не знайдено book_manifest.json", fg=typer.colors.RED)
+        raise typer.Abort()
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    chunk_max = int(manifest.get("chunk_token_max", 3200))
+
+    part_dirs = sorted(p for p in book_dir.iterdir() if p.is_dir())
+    errors = 0
+    for part in part_dirs:
+        md_files = list(part.glob("*_text.md"))
+        if len(md_files) != 1:
+            typer.secho(f"❌ {part.name}: очікується один *_text.md, знайдено {len(md_files)}", fg=typer.colors.RED)
+            errors += 1
+            continue
+        md_path = md_files[0]
+        meta_path = part / "meta.json"
+        if not meta_path.exists():
+            typer.secho(f"❌ {part.name}: meta.json відсутній", fg=typer.colors.RED)
+            errors += 1
+            continue
+
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        # tokens check
+        real_tokens = token_count(md_path.read_text(encoding="utf-8"))
+        if real_tokens != meta["tokens"]:
+            typer.secho(f"⚠️  {part.name}: tokens у meta={meta['tokens']}, по факту={real_tokens}", fg=typer.colors.YELLOW)
+
+        if real_tokens > chunk_max:
+            typer.secho(f"❌ {part.name}: {real_tokens}>{chunk_max} токенів", fg=typer.colors.RED)
+            errors += 1
+
+        # images existence
+        for img in meta.get("images", []):
+            if not (part / img).exists():
+                typer.secho(f"❌ {part.name}: відсутнє зображення {img}", fg=typer.colors.RED)
+                errors += 1
+
+    if errors == 0:
+        typer.secho("✅ Валідно", fg=typer.colors.GREEN)
+    else:
+        typer.secho(f"❌ Знайдено {errors} помилок", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
 
 
 if __name__ == "__main__":
