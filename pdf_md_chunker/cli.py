@@ -1,12 +1,8 @@
 from pathlib import Path
 
-try:
-    import typer
-except ImportError:
-    raise ImportError(
-        "Typer is required but not installed. "
-        "Please install it with: pip install typer"
-    )
+
+import typer
+
 
 app = typer.Typer(add_completion=False, help="PDF → Markdown-Chunks CLI")
 
@@ -25,7 +21,8 @@ def split(
     from datetime import datetime, timezone
     import json
     import os
-    from .extract import extract_blocks
+    from .extract import extract_content
+    from .outline import parse_outline
     from .chunker import Chunker
     from .utils import sha256sum, slugify
 
@@ -33,16 +30,23 @@ def split(
     out_dir = out_dir / book_slug
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    typer.echo("👉 Витягаю текст з PDF…")
-    blocks = extract_blocks(pdf_path)
-    typer.echo(f"   Отримано {len(blocks)} блоків")
+    typer.echo("👉 Витягаю текст та зображення з PDF…")
+    blocks, img_bytes = extract_content(pdf_path)
+    typer.echo(f"   Блоків тексту: {len(blocks)}, вбудованих зображень: {len(img_bytes)}")
+
+    outline_pages = {p for _, p in parse_outline(pdf_path)}
 
     typer.echo("👉 Розбиваю на chunks…")
-    chunker = Chunker(target_tokens=chunk_tokens, max_tokens=chunk_max)
+    chunker = Chunker(target_tokens=chunk_tokens, max_tokens=chunk_max, outline_pages=outline_pages)
     chunks = chunker.split_blocks(blocks)
     typer.echo(f"   Згенеровано {len(chunks)} частин")
 
     # ---- Зберігаємо частини та зображення ----
+    # build page→images mapping
+    images_map: dict[int, list[bytes]] = {}
+    for bts, pg in img_bytes:
+        images_map.setdefault(pg, []).append(bts)
+
     try:
         from pdf2image import convert_from_path  # type: ignore
     except ImportError:
@@ -59,7 +63,17 @@ def split(
 
         # 2. Зображення (за наявності pdf2image)
         images: list[str] = []
-        if convert_from_path is not None:
+        # save embedded images first
+        seq = 1
+        for pg in range(chunk.page_start, chunk.page_end + 1):
+            for data in images_map.get(pg, []):
+                img_name = f"{book_slug}_{part_suffix}_img-{seq:04d}.png"
+                (part_dir / img_name).write_bytes(data)
+                images.append(img_name)
+                seq += 1
+
+        # fallback: snapshot page if no embedded images & pdf2image available
+        if not images and convert_from_path is not None:
             try:
                 pages_imgs = convert_from_path(
                     str(pdf_path),
@@ -69,12 +83,11 @@ def split(
                     thread_count=2,
                     output_folder=str(part_dir),
                     paths_only=True,
-                    output_file=f"{book_slug}_{part_suffix}_img",
+                    output_file=f"{book_slug}_{part_suffix}_snap",
                 )
-                # convert_from_path returns list of file paths
                 images = [Path(p).name for p in pages_imgs if isinstance(p, str)]
             except Exception as e:
-                typer.echo(f"⚠️  Помилка конвертації зображень: {e}")
+                typer.echo(f"⚠️  Помилка конвертації snapshot-зображень: {e}")
 
         # 3. meta.json
         meta = {

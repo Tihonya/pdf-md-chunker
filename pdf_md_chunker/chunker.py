@@ -27,10 +27,12 @@ class Chunker:
         target_tokens: int = 1500,
         max_tokens: int = 3200,
         quality_threshold: float = 0.9,
+        outline_pages: set[int] | None = None,
     ) -> None:
         self.target = target_tokens
         self.max = max_tokens
         self.quality = quality_threshold * 100  # rapidfuzz ratio 0-100
+        self.outline_pages = outline_pages or set()
 
     def deduplicate(self, chunks: List[Chunk]) -> List[Chunk]:
         unique: List[Chunk] = []
@@ -58,8 +60,10 @@ class Chunker:
             buf.append(text)
             pages.append(page)
             tok += t
-            # if passed target and have heading break marker (simplified) → flush
-            if tok >= self.target and (text.strip().endswith("\n#") or len(buf) > 1):
+            # if passed target and (outline break or heading marker) → flush
+            if tok >= self.target and (
+                page in self.outline_pages or text.strip().endswith("\n#") or len(buf) > 1
+            ):
                 chunks.append(
                     Chunk(text="\n\n".join(buf), page_start=pages[0], page_end=pages[-1])
                 )
