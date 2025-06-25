@@ -31,7 +31,7 @@ def parse_outline(pdf_path: Path | str, max_depth: int = 2) -> List[Tuple[str, i
         with pikepdf.open(pdf_path) as pdf:
             outline_root = pdf.open_outline()
             if outline_root:
-                _walk(outline_root, pdf, max_depth, 1, result)
+                _walk(list(outline_root), pdf, max_depth, 1, result)  # type: ignore[arg-type]
     except Exception:  # pragma: no cover
         return []
     return result 

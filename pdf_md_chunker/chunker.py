@@ -50,6 +50,13 @@ class Chunker:
         pages: List[int] = []
         tok = 0
         for text, page in blocks:
+            # нова сторінка з outline → спочатку закриваємо попередній буфер
+            if buf and page in self.outline_pages:
+                chunks.append(
+                    Chunk(text="\n\n".join(buf), page_start=pages[0], page_end=pages[-1])
+                )
+                buf, pages, tok = [], [], 0
+
             t = token_count(text)
             # if adding exceeds hard max → flush current buffer
             if buf and tok + t > self.max:

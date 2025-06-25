@@ -16,6 +16,11 @@ def split(
     chunk_tokens: int = typer.Option(1500, "--chunk-tokens", help="Target chunk size (tokens)"),
     chunk_max: int = typer.Option(3200, "--chunk-max", help="Hard token limit per chunk"),
     lang: str = typer.Option("auto", "--lang", help="Language: en / uk / auto"),
+    snapshots: bool = typer.Option(
+        False,
+        "--snapshots/--no-snapshots",
+        help="Якщо ввімкнено — робити PNG-скріншоти сторінок, коли немає вбудованих зображень.",
+    ),
 ):
     """Split a PDF book into Markdown chunks according to the technical specification."""
     from datetime import datetime, timezone
@@ -72,8 +77,8 @@ def split(
                 images.append(img_name)
                 seq += 1
 
-        # fallback: snapshot page if no embedded images & pdf2image available
-        if not images and convert_from_path is not None:
+        # fallback: snapshot page (за потреби)
+        if not images and snapshots and convert_from_path is not None:
             try:
                 pages_imgs = convert_from_path(
                     str(pdf_path),
