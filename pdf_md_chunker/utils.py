@@ -5,10 +5,7 @@ import re
 from pathlib import Path
 from typing import Iterable, List
 
-try:
-    import tiktoken  # type: ignore
-except ImportError:  # pragma: no cover
-    tiktoken = None  # type: ignore
+import tiktoken  # type: ignore
 
 __all__ = [
     "slugify",
